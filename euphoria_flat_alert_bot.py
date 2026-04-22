@@ -16,7 +16,7 @@ WINDOW = 15
 FLAT_THRESHOLD = float(os.getenv("FLAT_THRESHOLD", "0.0005"))
 
 POLL_SECONDS = 60
-ALERT_COOLDOWN_SECONDS = 30 * 60
+ALERT_COOLDOWN_SECONDS = 30 * 60   # 30 minutes between auto alerts
 
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/ETH-USD/candles"
@@ -24,20 +24,13 @@ COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/ETH-USD/candl
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     raise ValueError("❌ Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID environment variables!")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("tap-alert")
 
 
 async def fetch_closes(client: httpx.AsyncClient, limit: int = 16) -> list[float]:
     try:
-        r = await client.get(
-            BINANCE_KLINES_URL,
-            params={"symbol": SYMBOL, "interval": "1m", "limit": limit},
-            timeout=10.0
-        )
+        r = await client.get(BINANCE_KLINES_URL, params={"symbol": SYMBOL, "interval": "1m", "limit": limit}, timeout=10)
         r.raise_for_status()
         return [float(k[4]) for k in r.json()]
     except httpx.HTTPStatusError as e:
@@ -45,12 +38,7 @@ async def fetch_closes(client: httpx.AsyncClient, limit: int = 16) -> list[float
             raise
         log.warning("Binance blocked (451) — using Coinbase fallback")
 
-    # Coinbase fallback
-    r = await client.get(
-        COINBASE_CANDLES_URL,
-        params={"granularity": 60},
-        timeout=10.0
-    )
+    r = await client.get(COINBASE_CANDLES_URL, params={"granularity": 60}, timeout=10)
     r.raise_for_status()
     candles = list(reversed(r.json()[:limit]))
     return [float(c[4]) for c in candles]
@@ -71,11 +59,11 @@ async def send_telegram(client, text: str, chat_id=None):
         await client.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
-            timeout=10.0
+            timeout=10
         )
         log.info("✅ Message sent")
     except Exception as e:
-        log.error(f"Telegram send failed: {e}")
+        log.error(f"Telegram failed: {e}")
 
 
 async def get_status(client) -> str:
@@ -92,10 +80,9 @@ Price: `${price:,.2f}`
 Threshold: `{FLAT_THRESHOLD:.4%}`
 Status: {emoji}
 
-Tip: Start tapping when you see 🟢"""
+💡 Tip: Tap when you see 🟢 LOW VOL"""
 
 
-# ================== MAIN ==================
 async def main():
     log.info(f"🚀 Euphoria Low-Vol Tap Bot started | threshold={FLAT_THRESHOLD:.4%}")
 
@@ -103,7 +90,6 @@ async def main():
     update_offset = 0
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        # Startup
         try:
             closes = await fetch_closes(client)
             log.info(f"✅ Connected | Current price ~ {closes[-1]:.2f}")
@@ -112,7 +98,7 @@ async def main():
 
         while True:
             try:
-                # Market check + auto alert
+                # === Market check + auto alert ===
                 closes = await fetch_closes(client, WINDOW + 1)
                 vol = stdev_of_log_returns(closes)
                 price = closes[-1]
@@ -133,30 +119,26 @@ Threshold: `{FLAT_THRESHOLD:.4%}`
                     await send_telegram(client, msg)
                     last_alert_ts = now
 
-                # Check Telegram commands (/vol)
+                # === Check for /vol command ===
                 try:
                     resp = await client.get(
                         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                        params={
-                            "offset": update_offset,
-                            "timeout": 8,
-                            "allowed_updates": ["message"]
-                        }
+                        params={"offset": update_offset, "timeout": 8, "allowed_updates": ["message"]}
                     )
                     data = resp.json()
 
                     if data.get("result"):
                         for update in data["result"]:
-                            update_offset = update.get("update_id", 0) + 1
-                            message = update.get("message")
-                            if message and message.get("text") == "/vol":
-                                status_text = await get_status(client)
-                                await send_telegram(client, status_text, chat_id=message["chat"]["id"])
-                except Exception as cmd_e:
-                    log.debug(f"getUpdates issue (normal): {cmd_e}")
+                            update_offset = update["update_id"] + 1
+                            msg = update.get("message")
+                            if msg and msg.get("text") == "/vol":
+                                status = await get_status(client)
+                                await send_telegram(client, status, chat_id=msg["chat"]["id"])
+                except Exception as e:
+                    log.debug(f"getUpdates: {e}")
 
             except Exception as e:
-                log.error(f"Main loop error: {type(e).__name__}: {e}")
+                log.error(f"Main loop error: {type(e).__name__} - {e}")
 
             await asyncio.sleep(POLL_SECONDS)
 
