@@ -13,10 +13,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SYMBOL = "ETHUSDT"
 WINDOW = 15
-FLAT_THRESHOLD = float(os.getenv("FLAT_THRESHOLD", "0.0005"))
+FLAT_THRESHOLD = float(os.getenv("FLAT_THRESHOLD", "0.0005"))  # Default
 
 POLL_SECONDS = 60
-ALERT_COOLDOWN_SECONDS = 30 * 60   # 30 minutes between auto alerts
+ALERT_COOLDOWN_SECONDS = 30 * 60
 
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/ETH-USD/candles"
@@ -66,24 +66,26 @@ async def send_telegram(client, text: str, chat_id=None):
         log.error(f"Telegram failed: {e}")
 
 
-async def get_status(client) -> str:
+async def get_status(client, threshold) -> str:
     closes = await fetch_closes(client, WINDOW + 1)
     vol = stdev_of_log_returns(closes)
     price = closes[-1]
-    is_low = vol < FLAT_THRESHOLD
+    is_low = vol < threshold
     emoji = "🟢 GOOD TO TAP" if is_low else "🔴 WAIT"
 
     return f"""📊 *ETH Volatility Check*
 
 Price: `${price:,.2f}`
 15m Volatility: `{vol:.4%}`
-Threshold: `{FLAT_THRESHOLD:.4%}`
+Current Threshold: `{threshold:.4%}`
 Status: {emoji}
 
-💡 Tip: Tap when you see 🟢 LOW VOL"""
+💡 Tip: Tap when you see 🟢"""
 
 
+# ================== MAIN ==================
 async def main():
+    global FLAT_THRESHOLD
     log.info(f"🚀 Euphoria Low-Vol Tap Bot started | threshold={FLAT_THRESHOLD:.4%}")
 
     last_alert_ts = 0.0
@@ -119,7 +121,7 @@ Threshold: `{FLAT_THRESHOLD:.4%}`
                     await send_telegram(client, msg)
                     last_alert_ts = now
 
-                # === Check for /vol command ===
+                # === Check for Telegram commands ===
                 try:
                     resp = await client.get(
                         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
@@ -131,17 +133,29 @@ Threshold: `{FLAT_THRESHOLD:.4%}`
                         for update in data["result"]:
                             update_offset = update["update_id"] + 1
                             msg = update.get("message")
-                            if msg and msg.get("text") == "/vol":
-                                status = await get_status(client)
-                                await send_telegram(client, status, chat_id=msg["chat"]["id"])
-                except Exception as e:
-                    log.debug(f"getUpdates: {e}")
+                            if not msg:
+                                continue
 
-            except Exception as e:
-                log.error(f"Main loop error: {type(e).__name__} - {e}")
+                            text = msg.get("text", "").strip()
+                            chat_id = msg["chat"]["id"]
 
-            await asyncio.sleep(POLL_SECONDS)
+                            if text == "/vol":
+                                status = await get_status(client, FLAT_THRESHOLD)
+                                await send_telegram(client, status, chat_id=chat_id)
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+                            elif text.startswith("/setthreshold"):
+                                try:
+                                    # Extract number after command
+                                    parts = text.split()
+                                    if len(parts) > 1:
+                                        new_threshold = float(parts[1])
+                                        if 0.0001 <= new_threshold <= 0.005:
+                                            old_threshold = FLAT_THRESHOLD
+                                            FLAT_THRESHOLD = new_threshold
+                                            await send_telegram(client, 
+                                                f"✅ Threshold updated!\n\n"
+                                                f"Old: `{old_threshold:.4%}`\n"
+                                                f"New: `{FLAT_THRESHOLD:.4%}`\n\n"
+                                                f"Bot will now alert when volatility drops below this value.", 
+                                                chat_id=chat_id)
+                                            log.info(f"Threshold changed from {old_threshold:.4%} to {FLAT_THRESHOLD:.4%
