@@ -145,7 +145,6 @@ Threshold: `{FLAT_THRESHOLD:.4%}`
 
                             elif text.startswith("/setthreshold"):
                                 try:
-                                    # Extract number after command
                                     parts = text.split()
                                     if len(parts) > 1:
                                         new_threshold = float(parts[1])
@@ -158,4 +157,22 @@ Threshold: `{FLAT_THRESHOLD:.4%}`
                                                 f"New: `{FLAT_THRESHOLD:.4%}`\n\n"
                                                 f"Bot will now alert when volatility drops below this value.", 
                                                 chat_id=chat_id)
-                                            log.info(f"Threshold changed from {old_threshold:.4%} to {FLAT_THRESHOLD:.4%
+                                            log.info(f"Threshold changed from {old_threshold:.4%} to {FLAT_THRESHOLD:.4%}")
+                                        else:
+                                            await send_telegram(client, "❌ Invalid value. Use a number between 0.0001 and 0.005 (e.g. `/setthreshold 0.0004`)", chat_id=chat_id)
+                                    else:
+                                        await send_telegram(client, "Usage: `/setthreshold 0.0004`", chat_id=chat_id)
+                                except ValueError:
+                                    await send_telegram(client, "❌ Please provide a valid number. Example: `/setthreshold 0.0004`", chat_id=chat_id)
+
+                except Exception as e:
+                    log.debug(f"getUpdates: {e}")
+
+            except Exception as e:
+                log.error(f"Main loop error: {type(e).__name__} - {e}")
+
+            await asyncio.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
