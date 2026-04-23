@@ -13,7 +13,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SYMBOL = "ETHUSDT"
 WINDOW = 15
-FLAT_THRESHOLD = float(os.getenv("FLAT_THRESHOLD", "0.0005"))  # Default
+FLAT_THRESHOLD = float(os.getenv("FLAT_THRESHOLD", "0.0005"))
 
 POLL_SECONDS = 60
 ALERT_COOLDOWN_SECONDS = 30 * 60
@@ -26,6 +26,9 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("tap-alert")
+
+# Global variables for duration tracking
+low_vol_start_time = None
 
 
 async def fetch_closes(client: httpx.AsyncClient, limit: int = 16) -> list[float]:
@@ -67,10 +70,17 @@ async def send_telegram(client, text: str, chat_id=None):
 
 
 async def get_status(client, threshold) -> str:
+    global low_vol_start_time
     closes = await fetch_closes(client, WINDOW + 1)
     vol = stdev_of_log_returns(closes)
     price = closes[-1]
     is_low = vol < threshold
+
+    duration_str = ""
+    if is_low and low_vol_start_time:
+        minutes = int((time.time() - low_vol_start_time) / 60)
+        duration_str = f"\nLow volatility for: `{minutes}` minutes"
+
     emoji = "🟢 GOOD TO TAP" if is_low else "🔴 WAIT"
 
     return f"""📊 *ETH Volatility Check*
@@ -78,14 +88,14 @@ async def get_status(client, threshold) -> str:
 Price: `${price:,.2f}`
 15m Volatility: `{vol:.4%}`
 Current Threshold: `{threshold:.4%}`
-Status: {emoji}
+Status: {emoji}{duration_str}
 
 💡 Tip: Tap when you see 🟢"""
 
 
 # ================== MAIN ==================
 async def main():
-    global FLAT_THRESHOLD
+    global FLAT_THRESHOLD, low_vol_start_time
     log.info(f"🚀 Euphoria Low-Vol Tap Bot started | threshold={FLAT_THRESHOLD:.4%}")
 
     last_alert_ts = 0.0
@@ -108,14 +118,24 @@ async def main():
 
                 is_low_vol = vol < FLAT_THRESHOLD
 
-                log.info(f"price={price:.2f} | vol={vol:.4%} | {'🟢 LOW VOL - GOOD TO TAP' if is_low_vol else '🔴 NORMAL VOL'}")
+                # Update duration tracking
+                if is_low_vol:
+                    if low_vol_start_time is None:
+                        low_vol_start_time = now
+                else:
+                    low_vol_start_time = None
 
+                log.info(f"price={price:.2f} | vol={vol:.4%} | {'🟢 LOW VOL' if is_low_vol else '🔴 NORMAL VOL'}")
+
+                # Auto alert
                 if is_low_vol and (now - last_alert_ts) > ALERT_COOLDOWN_SECONDS:
+                    minutes = int((now - low_vol_start_time) / 60) if low_vol_start_time else 0
                     msg = f"""🔥 *GOOD TIME TO TAP!*
 
 Price: `${price:,.2f}`
 15m Volatility: `{vol:.4%}`
 Threshold: `{FLAT_THRESHOLD:.4%}`
+Low volatility for: `{minutes}` minutes
 
 😴 Tap line is sleeping — perfect time to start tapping on Euphoria!"""
                     await send_telegram(client, msg)
